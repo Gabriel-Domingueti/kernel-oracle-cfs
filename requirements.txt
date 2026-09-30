@@ -1,0 +1,6 @@
+pandas>=2.2.2
+numpy>=1.26.0
+scikit-learn>=1.4.0
+torch>=2.2.0
+matplotlib>=3.8.0
+streamlit>=1.30.0

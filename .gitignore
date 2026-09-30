@@ -1,0 +1,13 @@
+# Arquivos de dados brutos e modelos treinados
+perf.data
+data/*.csv
+data/*.txt
+data/*.pth
+
+# Executável compilado
+scripts/stress_cfs
+
+# Ambientes virtuais e cache
+venv/
+__pycache__/
+.streamlit/
