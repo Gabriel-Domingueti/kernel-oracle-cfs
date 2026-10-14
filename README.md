@@ -1,57 +1,20 @@
-# KernelOracle: Previsão do Escalonador CFS com Deep Learning
+# KernelOracle Sentinel
 
-Este projeto implementa uma arquitetura baseada em inteligência artificial para prever a sequência de tarefas selecionadas pelo *Completely Fair Scheduler* (CFS) do Linux. Utilizando uma rede neural *Long Short-Term Memory* (LSTM), o objetivo é modelar o comportamento de alocação de tempo de CPU, abrindo caminho para decisões de escalonamento mais adaptativas perante diferentes cargas de trabalho.
+**Sistema de Deteção de Intrusões (IDS) ao nível do Kernel Linux baseado em Deep Learning.**
 
-## Estrutura da Arquitetura
-O pipeline do projeto está dividido em três fases fundamentais:
-* **Geração de Carga e Captura (C e Linux Perf):** Um script nativo gera contenção assimétrica de CPU e I/O, enquanto o utilitário `perf` regista as decisões exatas de preempção do kernel.
-* **Engenharia de Dados e Modelação (Python e PyTorch):** Extração da diferença de tempo entre os escalonamentos consecutivos e treino de uma rede LSTM capaz de reconhecer os padrões sequenciais e a magnitude das fatias de tempo.
-* **Visualização Dinâmica (Streamlit):** Um *dashboard* interativo que contrasta as previsões do modelo treinado com o comportamento real do CFS, evidenciando a capacidade da rede em antecipar a alocação de tarefas.
+O KernelOracle Sentinel é um projeto de pesquisa em cibersegurança que utiliza redes neurais LSTM para prever as fatias de tempo alocadas pelo escalonador do Linux (*Completely Fair Scheduler* - CFS). Ao antecipar o comportamento normal do processador, o sistema transforma-se num oráculo de segurança: qualquer discrepância drástica entre a previsão matemática e a execução real atua como um alarme imediato contra ameaças agressivas, como *cryptominers* e ataques de negação de serviço ao nível de CPU.
 
-## Requisitos do Sistema
-* Sistema Operacional baseado em Linux (testado no Arch Linux).
-* GCC (para compilação do gerador de carga nativo).
-* Ferramentas nativas do kernel: `linux-tools-common`, `linux-tools-generic`.
-* Python 3.8+.
+## Arquitetura do Repositório
 
-## Instalação e Configuração
+O projeto documenta a evolução da pesquisa em duas fases distintas:
 
-Clone o repositório e crie um ambiente virtual Python para isolar as dependências:
-```bash
-git clone https://github.com/Gabriel-Domingueti/kernel-oracle-cfs.git
-cd kernel-oracle-cfs
+*   **[`v1/`](v1/): Prova de Conceito (Offline)** - Fase inicial utilizando a ferramenta `perf` para extração estática de dados, treino em *batch* e visualização de padrões de escalonamento através de um *dashboard* interativo em Streamlit.
+*   **[`v2/`](v2/): Motor IDS em Tempo Real (eBPF)** - Evolução para um sistema de defesa ativo. Utiliza a tecnologia **eBPF (Extended Berkeley Packet Filter)** para monitorização com zero latência no kernel e *Online Learning* (aprendizagem contínua), eliminando a necessidade de bases de dados estáticas.
 
-# Criar e ativar o ambiente virtual
-python3 -m venv venv
-source venv/bin/activate
+## Requisitos Globais
+*   Sistema Operativo: Linux (Kernel 5.15+ recomendado para suporte total a eBPF)
+*   Python 3.8+
+*   Dependências Python: `pip install -r requirements.txt`
 
-# Instalar as dependências do projeto
-pip install -r requirements.txt
-```
-## Como Executar
-
-Certifica-se de que o ambiente virtual está ativado (`source venv/bin/activate`) antes de executar os scripts em Python.
-
-**1. Geração de Dados**
-Compila o gerador de estresse em C e inicia a execução. Em outro terminal, utiliza o utilitário `perf` para registar as métricas de escalonamento do kernel:
-```bash
-gcc -o scripts/stress_cfs scripts/stress_cfs.c -lpthread
-./scripts/stress_cfs
-
-# Em outro terminal:
-sudo perf sched record -- sleep 50
-sudo perf sched script > data/escalonamento_raw.txt
-```
-
-**2. Pré-processamento e Treino**
-Converte os dados brutos em um dataset limpo e inicia o treino da rede LSTM:
-```bash
-python3 scripts/pre_processamento.py
-python3 scripts/treinar_lstm.py
-```
-
-**3. Lançamento do Dashboard**
-Visualiza graficamente o comportamento real do CFS em contraste com as previsões da rede neural:
-```bash
-streamlit run dashboard/app.py
-```
+---
+*Projeto desenvolvido para exploração de segurança em baixo nível e aplicação de Machine Learning na defesa de infraestruturas.*
