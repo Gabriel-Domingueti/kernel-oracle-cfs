@@ -14,6 +14,7 @@ O projeto documenta a evolução da pesquisa em duas fases distintas:
 ## Requisitos Globais
 *   Sistema Operativo: Linux (Kernel 5.15+ recomendado para suporte total a eBPF)
 *   Python 3.8+
+*   Criar e ativar o ambiente virtual: `python3 -m venv venv & source venv/bin/activate`
 *   Dependências Python: `pip install -r requirements.txt`
 
 ---
