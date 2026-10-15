@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import os
 from collections import deque
 from bcc import BPF
 
@@ -58,6 +59,12 @@ TRACEPOINT_PROBE(sched, sched_switch) {
 # 3. MOTOR DE APRENDIZADO CONTÍNUO E IDS
 # ==========================================
 def main():
+    # Eleva o processo do Sentinel à prioridade máxima do sistema
+    try:
+        os.nice(-20)
+    except PermissionError:
+        pass
+
     print("[*] Iniciando KernelOracle Sentinel (Modo Online Learning)...")
     
     # Instancia o modelo "em branco"
@@ -83,6 +90,13 @@ def main():
         # Converte nanosegundos para milissegundos
         delta_t_ms = evento.delta_t_ns / 1000000.0
         nome_tarefa = evento.comm.decode('utf-8', 'replace')
+
+        # ==========================================
+        # IGNORAR O PRÓPRIO SENTINEL E O EBPF
+        # ==========================================
+        if "python" in nome_tarefa:
+            return 
+        # ==========================================
         
         # Normalização simples em tempo real (evita precisar do antigo StandardScaler)
         # Assumimos que uma fatia normal não passa muito de 50ms.
@@ -116,7 +130,7 @@ def main():
                 
                 if erro_absoluto > limite_erro_anomalia:
                     # ALERTA DE INTRUSÃO! O erro foi muito alto. Não treinamos a rede.
-                    print(f"[!!!] ANOMALIA IDS | PID: {evento.pid: <6} | Processo: {nome_tarefa: <15} | Erro: {erro_absoluto:.2f}")
+                    print(f"[!!!] ANOMALIA IDS | PID: {evento.pid: <6} | Processo: {nome_tarefa: <15} | Erro: {erro_absoluto:.2f}", flush=True)
                     return # Sai da função para evitar que a rede aprenda o malware
             
             # 4. Fase de Treinamento (Backpropagation)
@@ -124,8 +138,15 @@ def main():
             perda.backward()       # Calcula os ajustes necessários nos pesos
             otimizador.step()      # Aplica os ajustes na rede neural
 
-    # Abre o buffer do kernel e escuta
-    b["eventos"].open_perf_buffer(processar_evento)
+    # ==========================================
+    # GESTÃO DO BUFFER DO KERNEL
+    # ==========================================
+    def ignorar_perdas(lost_count):
+        # Oculta o aviso de "Possibly lost samples" do terminal
+        pass 
+
+    # Abre o buffer com um tamanho muito maior (page_cnt=256) e silencia os drops
+    b["eventos"].open_perf_buffer(processar_evento, lost_cb=ignorar_perdas, page_cnt=256)
     
     try:
         while True:

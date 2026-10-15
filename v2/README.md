@@ -19,8 +19,11 @@ Como o eBPF opera em baixo nível, são necessários privilégios de administrad
 ```bash
 sudo apt update
 sudo apt install -y bpfcc-tools linux-headers-$(uname -r) python3-bpfcc
+python3 -m venv venv --system-site-packages
+source venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install numpy
 ```
-Nota: Certifique-se de que as dependências Python (torch, numpy) já estão instaladas no seu ambiente.
 
 ## Como Simular o Ataque e a Defesa
 
@@ -38,7 +41,7 @@ gcc -o scripts/malware_sim scripts/malware_sim.c -lpthread
 Execute o IDS. Este script necessita de privilégios sudo para injetar o eBPF no kernel:
 
 ```bash
-sudo python3 scripts/sentinel_online.py
+sudo ../venv/bin/python scripts/sentinel_online.py
 ```
 
 O sistema iniciará uma fase de "Calibração" (os primeiros 500 eventos) onde a LSTM aprende organicamente o ritmo atual da máquina. Aguarde até receber a mensagem de que o sistema está a vigiar ativamente.
