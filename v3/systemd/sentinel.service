@@ -1,0 +1,16 @@
+[Unit]
+Description=KernelOracle Sentinel - eBPF Deep Learning IPS Daemon (v3)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=__V3_DIR__
+ExecStart=__VENV_PYTHON__ __V3_DIR__/scripts/sentinel_daemon.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
