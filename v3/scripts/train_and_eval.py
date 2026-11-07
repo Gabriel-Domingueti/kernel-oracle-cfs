@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 import pickle
 import subprocess
 import numpy as np
@@ -20,7 +22,7 @@ class KernelLSTM(nn.Module):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 
-# 2. CÓDIGO eBPF (Usando TRACEPOINT_PROBE oficial e sintaxe start_time.update do BCC)
+# 2. CÓDIGO eBPF
 bpf_code = """
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
@@ -40,7 +42,6 @@ TRACEPOINT_PROBE(sched, sched_switch) {
     u32 prev_pid = args->prev_pid;
     u32 next_pid = args->next_pid;
 
-    // Sintaxe correta do BCC para atualizar o mapa
     start_time.update(&next_pid, &ts);
 
     u64 *tsp = start_time.lookup(&prev_pid);
@@ -57,12 +58,17 @@ TRACEPOINT_PROBE(sched, sched_switch) {
 """
 
 def main():
-    # Deteta automaticamente a pasta v3/ independente de onde o script for chamado
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(BASE_DIR)
 
     os.makedirs("artifacts", exist_ok=True)
     os.makedirs("metrics", exist_ok=True)
+
+    caminho_malware = os.path.join(BASE_DIR, "scripts", "malware_sim")
+    if not os.path.exists(caminho_malware):
+        print(f"[ERRO] Binário '{caminho_malware}' não encontrado!")
+        print("Compile-o primeiro com: gcc -o scripts/malware_sim scripts/malware_sim.c -lpthread")
+        sys.exit(1)
 
     print("[*] Injetando eBPF para captura de treinamento e validação...")
     b = BPF(text=bpf_code)
@@ -75,16 +81,15 @@ def main():
     max_norm_ms = 50.0
     historico = deque(maxlen=tamanho_janela)
 
-    fase = "TREINO"  # TREINO -> AVALIACAO -> FIM
+    # Fases: TREINO -> EVAL_NORMAL -> EVAL_MALWARE -> FIM
+    fase = "TREINO"
     eventos_treino = 0
     meta_treino = 1500
 
     y_true = []
     y_scores = []
-    meta_avaliacao = 1000
+    meta_por_classe = 500  # 500 Normais (0) + 500 Malware (1) = 1000 amostras balanceadas
     proc_malware = None
-
-    caminho_malware = os.path.join(BASE_DIR, "scripts", "malware_sim")
 
     def ignorar_perdas(lost):
         pass
@@ -120,28 +125,45 @@ def main():
                     print(f"    [Treino] {eventos_treino}/{meta_treino} eventos | Loss: {perda.item():.6f}")
 
                 if eventos_treino >= meta_treino:
-                    print("\n[+] Treinamento concluído! Iniciando Fase de Avaliação (Normal vs Malware)...")
-                    fase = "AVALIACAO"
-                    if os.path.exists(caminho_malware):
+                    print("\n[+] Treinamento concluído! Coletando 500 amostras Normais (Classe 0)...")
+                    fase = "EVAL_NORMAL"
+
+            elif fase == "EVAL_NORMAL":
+                if "malware_sim" not in nome_tarefa:
+                    modelo.eval()
+                    with torch.no_grad():
+                        predicao = modelo(x_tensor)
+                        erro_abs = abs(predicao.item() - delta_t_scaled)
+
+                    y_true.append(0)
+                    y_scores.append(erro_abs)
+
+                    if len(y_true) % 250 == 0:
+                        print(f"    [Avaliação Normal] {len(y_true)}/{meta_por_classe} amostras coletadas...")
+
+                    if len(y_true) >= meta_por_classe:
+                        print("\n[*] Disparando malware_sim para coletar 500 amostras de Ataque (Classe 1)...")
                         proc_malware = subprocess.Popen([caminho_malware])
-                    else:
-                        print(f"[!] Aviso: {caminho_malware} não encontrado. Compile-o antes!")
+                        time.sleep(0.5)  # Aguarda o processo entrar em execução na CPU
+                        fase = "EVAL_MALWARE"
 
-            elif fase == "AVALIACAO":
-                modelo.eval()
-                with torch.no_grad():
-                    predicao = modelo(x_tensor)
-                    erro_abs = abs(predicao.item() - delta_t_scaled)
+            elif fase == "EVAL_MALWARE":
+                # Filtra especificamente os eventos gerados pelas threads do malware_sim
+                if "malware_sim" in nome_tarefa:
+                    modelo.eval()
+                    with torch.no_grad():
+                        predicao = modelo(x_tensor)
+                        erro_abs = abs(predicao.item() - delta_t_scaled)
 
-                label_real = 1 if "malware_sim" in nome_tarefa else 0
-                y_true.append(label_real)
-                y_scores.append(erro_abs)
+                    y_true.append(1)
+                    y_scores.append(erro_abs)
 
-                if len(y_true) % 200 == 0:
-                    print(f"    [Avaliação] Coletados {len(y_true)}/{meta_avaliacao} eventos de teste...")
+                    amostras_malware = len(y_true) - meta_por_classe
+                    if amostras_malware % 250 == 0:
+                        print(f"    [Avaliação Malware] {amostras_malware}/{meta_por_classe} amostras coletadas...")
 
-                if len(y_true) >= meta_avaliacao:
-                    fase = "FIM"
+                    if len(y_true) >= meta_por_classe * 2:
+                        fase = "FIM"
 
         if "malware_sim" not in nome_tarefa:
             historico.append(delta_t_scaled)
@@ -160,29 +182,25 @@ def main():
     y_true_np = np.array(y_true)
     y_scores_np = np.array(y_scores)
 
-    if len(np.unique(y_true_np)) < 2:
-        print("[!] Aviso: Apenas uma classe detectada no teste. Usando limiar padrão de 0.50.")
-        limiar_otimo = 0.50
-    else:
-        fpr, tpr, thresholds = roc_curve(y_true_np, y_scores_np)
-        roc_auc = auc(fpr, tpr)
+    fpr, tpr, thresholds = roc_curve(y_true_np, y_scores_np)
+    roc_auc = auc(fpr, tpr)
 
-        idx_otimo = np.argmax(tpr - fpr)
-        limiar_otimo = float(thresholds[idx_otimo])
+    idx_otimo = np.argmax(tpr - fpr)
+    limiar_otimo = float(thresholds[idx_otimo])
 
-        caminho_roc = os.path.join(BASE_DIR, "metrics", "curva_roc.png")
-        plt.figure(figsize=(7, 5))
-        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'Curva ROC (AUC = {roc_auc:.4f})')
-        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-        plt.scatter(fpr[idx_otimo], tpr[idx_otimo], color='red', zorder=5, label=f'Limiar Ótimo ({limiar_otimo:.4f})')
-        plt.xlabel('Taxa de Falsos Positivos (FPR)')
-        plt.ylabel('Taxa de Verdadeiros Positivos (TPR)')
-        plt.title('Curva ROC - KernelOracle Sentinel v3')
-        plt.legend(loc="lower right")
-        plt.grid(alpha=0.3)
-        plt.savefig(caminho_roc, dpi=300, bbox_inches='tight')
-        plt.close()
-        print(f"[+] Curva ROC salva em '{caminho_roc}' (AUC = {roc_auc:.4f})")
+    caminho_roc = os.path.join(BASE_DIR, "metrics", "curva_roc.png")
+    plt.figure(figsize=(7, 5))
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'Curva ROC (AUC = {roc_auc:.4f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.scatter(fpr[idx_otimo], tpr[idx_otimo], color='red', zorder=5, label=f'Limiar Ótimo ({limiar_otimo:.4f})')
+    plt.xlabel('Taxa de Falsos Positivos (FPR)')
+    plt.ylabel('Taxa de Verdadeiros Positivos (TPR)')
+    plt.title('Curva ROC - KernelOracle Sentinel v3')
+    plt.legend(loc="lower right")
+    plt.grid(alpha=0.3)
+    plt.savefig(caminho_roc, dpi=300, bbox_inches='tight')
+    plt.close()
+    print(f"[+] Curva ROC salva em '{caminho_roc}' (AUC = {roc_auc:.4f})")
 
     caminho_cm = os.path.join(BASE_DIR, "metrics", "matriz_confusao.png")
     y_pred_np = (y_scores_np >= limiar_otimo).astype(int)
