@@ -17,6 +17,7 @@ class KernelLSTM(nn.Module):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 
+# 2. CÓDIGO eBPF (Usando TRACEPOINT_PROBE oficial e sintaxe start_time.update do BCC)
 bpf_code = """
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
@@ -31,21 +32,22 @@ struct data_t {
 BPF_HASH(start_time, u32, u64);
 BPF_PERF_OUTPUT(eventos);
 
-int trace_sched_switch(struct pt_regs *ctx, bool preempt, struct task_struct *prev, struct task_struct *next) {
+TRACEPOINT_PROBE(sched, sched_switch) {
     u64 ts = bpf_ktime_get_ns();
-    u32 prev_pid = prev->pid;
-    u32 next_pid = next->pid;
+    u32 prev_pid = args->prev_pid;
+    u32 next_pid = args->next_pid;
 
-    bpf_map_update_elem(&start_time, &next_pid, &ts, BPF_ANY);
+    // Sintaxe correta do BCC para atualizar o mapa
+    start_time.update(&next_pid, &ts);
 
     u64 *tsp = start_time.lookup(&prev_pid);
     if (tsp != 0 && prev_pid != 0) {
         struct data_t data = {};
         data.pid = prev_pid;
-        data.tgid = prev->tgid;
+        data.tgid = bpf_get_current_pid_tgid() >> 32;
         data.delta_t_ns = ts - *tsp;
-        bpf_get_current_comm(&data.comm, sizeof(data.comm));
-        eventos.perf_submit(ctx, &data, sizeof(data));
+        __builtin_memcpy(&data.comm, args->prev_comm, sizeof(data.comm));
+        eventos.perf_submit(args, &data, sizeof(data));
     }
     return 0;
 }
@@ -80,7 +82,6 @@ def main():
     print(f"[*] KernelOracle IPS Daemon ativo | Limiar: {limite_erro_anomalia:.4f}", flush=True)
 
     b = BPF(text=bpf_code)
-    b.attach_kprobe(event_re=r"^finish_task_switch$|^finish_task_switch\.isra\.\d$", fn_name="trace_sched_switch")
 
     # Lista de processos críticos do sistema operativo que nunca devem ser encerrados
     WHITELIST = (
