@@ -19,7 +19,13 @@ O repositório está organizado em três gerações incrementais (`v1`, `v2` e `
 ## Destaques da Arquitetura v3 (KernelOracle Sentinel)
 
 1. **Modelagem Híbrida (Deep Learning + Processos Estocásticos):**
-   * **Rede LSTM:** Prevê a duração contínua da próxima fatia de CPU \(\hat{y}_t\) a partir de uma janela deslizante de 30 eventos \((E_{\text{LSTM}} = |y_t - \hat{y}_t|)\).
+   * 
+ **Rede LSTM:** Prevê a duração contínua da próxima fatia de CPU (\(\hat{y}_t\)) a partir de uma janela deslizante de 30 eventos.
+
+  $$
+  E_{\text{LSTM}} = |y_t - \hat{y}_t|
+  $$
+
    * **Cadeia de Markov ($3 \times 3$):** Avalia a probabilidade de transição entre estados discretos de retenção de CPU ($S_0$: Leve `< 0.8 ms`, $S_1$: Moderado `0.8 - 3.5 ms`, $S_2$: Exaustão `>= 3.5 ms`) usando log-verossimilhança negativa normalizada ($E_{\text{Markov}}$).
    * **Score Híbrido:** $S_{\text{Híbrido}}(t) = 0.60 \cdot E_{\text{LSTM}}(t) + 0.40 \cdot E_{\text{Markov}}(t)$.
 
