@@ -30,13 +30,107 @@ def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
     nll = -np.log(max(prob, 1e-4))
     return min(nll / (-np.log(1e-4)), 1.0)
 
+# Diretórios oficiais do sistema operacional (protege GNOME, KDE, XFCE, Cinnamon, Wayland, Xorg e Browsers instalados)
+DIRETORIOS_CONFIAVEIS_SO = (
+    "/usr/bin/",
+    "/usr/sbin/",
+    "/usr/lib/",
+    "/usr/lib64/",
+    "/usr/libexec/",
+    "/bin/",
+    "/sbin/",
+    "/lib/",
+    "/lib64/",
+    "/opt/",
+    "/snap/",
+    "/var/lib/flatpak/"
+)
+
+# Assinaturas universais de navegadores (Gecko, Blink, Chromium, WebKit), ambientes gráficos e ferramentas base
+ASSINATURAS_PROTEGIDAS = (
+    # Navegadores Web e motores de renderização
+    "firefox", "gecko", "glean", "chrom", "google-chrome", "brave", "vivaldi",
+    "opera", "msedge", "epiphany", "midori", "tor-browser", "waterfox", "librewolf",
+    "zen-browser", "webkit", "blink", "electron", "isolated web", "web content",
+    "webextensions", "compositor", "renderer", "socket process", "dom worker",
+    "utility process", "gpu-process", "crashpad", "sandbox", "zygote",
+    # Todos os Desktop Environments (GNOME, KDE, XFCE, Cinnamon, MATE, LXQt, Hyprland, Sway)
+    "gnome", "mutter", "gsd-", "gvfs", "nautilus", "evolution", "kded", "kwin",
+    "plasmashell", "akonadi", "dolphin", "krunner", "xfce", "xfwm", "xfdesktop",
+    "xfsettingsd", "panel", "whisker", "thunar", "tumblerd", "cinnamon", "nemo",
+    "muffin", "mate-", "caja", "marco", "lxqt", "openbox", "wayland", "xwayland",
+    "xorg", "inputthread", "sway", "hyprland", "wlroots", "picom", "ibus",
+    # Daemons padrão do Linux, Áudio, Rede e Desenvolvimento
+    "systemd", "imedated", "journald", "udev", "dbus", "polkit", "networkmanager",
+    "nm-", "wpa_supplicant", "avahi", "cups", "bluetooth", "upower", "udisksd",
+    "pipewire", "wireplumber", "pulseaudio", "alsa", "rtkit", "colord", "fwupd",
+    "packagekit", "apt", "dpkg", "dnf", "pacman", "flatpak", "snapd", "lightdm",
+    "gdm", "sddm", "bash", "zsh", "fish", "sh", "sudo", "su", "sshd", "gpg-agent",
+    "ssh-agent", "pg-agent", "gcr-", "gnome-keyring", "kwalletd", "python", "git",
+    "code", "codium", "nvim", "vim", "gcc", "clang", "cargo", "rust", "java",
+    "gmain", "gdbus", "dconf", "kworker", "ksoftirqd", "migration", "rcu_"
+)
+
+cache_proc_info = {}
+
+def obter_info_processo_real(tid, comm_thread):
+    if tid in cache_proc_info:
+        return cache_proc_info[tid]
+
+    tgid = tid
+    uid = 1000
+    caminho_exe = ""
+    cmdline = ""
+    nome_processo_pai = comm_thread
+
+    try:
+        with open(f"/proc/{tid}/status", "r") as f:
+            for linha in f:
+                if linha.startswith("Tgid:"):
+                    tgid = int(linha.split()[1])
+                elif linha.startswith("Uid:"):
+                    uid = int(linha.split()[1])
+                    break
+
+        if tgid != tid and os.path.exists(f"/proc/{tgid}/comm"):
+            with open(f"/proc/{tgid}/comm", "r") as f:
+                nome_processo_pai = f.read().strip()
+
+        if os.path.exists(f"/proc/{tgid}/exe"):
+            caminho_exe = os.readlink(f"/proc/{tgid}/exe").replace(" (deleted)", "")
+
+        if os.path.exists(f"/proc/{tgid}/cmdline"):
+            with open(f"/proc/{tgid}/cmdline", "rb") as f:
+                cmdline = f.read().replace(b"\x00", b" ").decode("utf-8", "replace").strip()
+    except Exception:
+        pass
+
+    # Verifica se é um processo protegido do sistema ou navegador
+    identidade = f"{comm_thread} {nome_processo_pai} {caminho_exe} {cmdline}".lower()
+    protegido = False
+
+    # 1. Daemons de sistema do Linux (UID de sistema < 1000, exceto se rodar de /tmp ou /home)
+    if uid < 1000 and caminho_exe.startswith(DIRETORIOS_CONFIAVEIS_SO):
+        protegido = True
+    # 2. Binários oficiais instalados nos diretórios raiz do SO (/usr/bin, /usr/lib, /opt, /snap, flatpak)
+    elif caminho_exe.startswith(DIRETORIOS_CONFIAVEIS_SO):
+        protegido = True
+    # 3. Qualquer processo ou thread com assinatura de navegador ou subsistema gráfico
+    elif any(assinatura in identidade for assinatura in ASSINATURAS_PROTEGIDAS):
+        protegido = True
+
+    info = (tgid, nome_processo_pai, caminho_exe, protegido)
+    if len(cache_proc_info) > 4096:
+        cache_proc_info.clear()
+    cache_proc_info[tid] = info
+    return info
+
 bpf_code = """
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 
 struct data_t {
     u32 pid;
-    u32 tgid;
     u64 delta_t_ns;
     char comm[TASK_COMM_LEN];
 };
@@ -55,7 +149,6 @@ TRACEPOINT_PROBE(sched, sched_switch) {
     if (tsp != 0 && prev_pid != 0) {
         struct data_t data = {};
         data.pid = prev_pid;
-        data.tgid = bpf_get_current_pid_tgid() >> 32;
         data.delta_t_ns = ts - *tsp;
         __builtin_memcpy(&data.comm, args->prev_comm, sizeof(data.comm));
         eventos.perf_submit(args, &data, sizeof(data));
@@ -95,17 +188,6 @@ def main():
 
     b = BPF(text=bpf_code)
 
-    WHITELIST = (
-        "python", "fwupd", "Xorg", "InputThread", "gmain", "gdbus", "systemd",
-        "journald", "bash", "sudo", "sshd", "xfce", "xfwm", "xfdesktop",
-        "xfsettingsd", "panel", "whisker", "Thunar", "tumblerd", "kworker",
-        "mint", "dbus", "lightdm", "pipewire", "pulseaudio", "nm-",
-        "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs", "evolution",
-        "pg-agent", "gpg-agent", "ssh-agent", "firefox", "Isolated Web",
-        "Web Content", "WebExtensions", "Compositor", "Renderer",
-        "Socket Process", "DOM Worker", "Utility Process", "git"
-    )
-
     ultimo_estado_proc = defaultdict(int)
     risco_acumulado = defaultdict(float)
     LIMITE_RISCO_IPS = 8.0
@@ -116,20 +198,23 @@ def main():
 
     def processar_evento(cpu, data, size):
         evento = b["eventos"].event(data)
-        nome_tarefa = evento.comm.decode('utf-8', 'replace').strip()
-        pid_alvo = evento.tgid if evento.tgid != 0 else evento.pid
-
-        if pid_alvo in pids_neutralizados or pid_alvo <= 300:
+        tid = evento.pid
+        if tid <= 300:
             return
 
-        if any(w.lower() in nome_tarefa.lower() for w in WHITELIST):
+        comm_thread = evento.comm.decode('utf-8', 'replace').strip()
+        pid_alvo, nome_pai, caminho_exe, protegido = obter_info_processo_real(tid, comm_thread)
+
+        if protegido or pid_alvo in pids_neutralizados or pid_alvo <= 300:
             return
+
+        chave_proc = nome_pai if nome_pai else comm_thread
 
         delta_t_ms = evento.delta_t_ns / 1000000.0
         delta_t_scaled = min(delta_t_ms / max_norm_ms, 1.0)
         estado_atual = discretizar_estado(delta_t_scaled)
-        estado_ant = ultimo_estado_proc[nome_tarefa]
-        ultimo_estado_proc[nome_tarefa] = estado_atual
+        estado_ant = ultimo_estado_proc[chave_proc]
+        ultimo_estado_proc[chave_proc] = estado_atual
 
         if len(historico) == tamanho_janela:
             x_tensor = torch.tensor(list(historico), dtype=torch.float32).view(1, tamanho_janela, 1)
@@ -141,17 +226,16 @@ def main():
             erro_mk = calcular_erro_markov(matriz_markov, estado_ant, estado_atual)
             score_hibrido = (alpha_hibrido * erro_lstm) + ((1.0 - alpha_hibrido) * erro_mk)
 
-            # Captura retenção de CPU tanto single-thread (S2) quanto disputa multi-thread na VM (S1)
             if score_hibrido > limite_erro_anomalia and estado_atual >= 1:
                 peso_estado = 1.5 if estado_atual == 2 else 1.0
                 incremento = peso_estado + score_hibrido + erro_mk
-                risco_acumulado[nome_tarefa] += incremento
-                risco_atual = risco_acumulado[nome_tarefa]
+                risco_acumulado[chave_proc] += incremento
+                risco_atual = risco_acumulado[chave_proc]
 
                 if risco_atual >= 3.5:
                     print(
                         f"[!] ALERTA HÍBRIDO (Risco: {risco_atual:.1f}/{LIMITE_RISCO_IPS}) | "
-                        f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <14} | "
+                        f"PID: {pid_alvo: <6} | Proc: {chave_proc: <14} | "
                         f"Transição: S{estado_ant}->S{estado_atual} | Score: {score_hibrido:.4f}",
                         flush=True
                     )
@@ -160,16 +244,15 @@ def main():
                     try:
                         os.kill(pid_alvo, signal.SIGKILL)
                         pids_neutralizados.add(pid_alvo)
-                        risco_acumulado[nome_tarefa] = 0.0
-                        print(f"[#] AÇÃO IPS: Ameaça '{nome_tarefa}' (PID {pid_alvo}) ABATIDA com SIGKILL!", flush=True)
+                        risco_acumulado[chave_proc] = 0.0
+                        print(f"[#] AÇÃO IPS: Ameaça '{chave_proc}' (PID {pid_alvo}) ABATIDA com SIGKILL!", flush=True)
                     except ProcessLookupError:
                         pass
                     except Exception as e:
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
-                # Decai suavemente (-0.15) apenas quando o processo é cooperativo (S0)
-                if estado_atual == 0 and risco_acumulado[nome_tarefa] > 0.0:
-                    risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] - 0.15)
+                if estado_atual == 0 and risco_acumulado[chave_proc] > 0.0:
+                    risco_acumulado[chave_proc] = max(0.0, risco_acumulado[chave_proc] - 0.15)
                 historico.append(delta_t_scaled)
         else:
             historico.append(delta_t_scaled)
