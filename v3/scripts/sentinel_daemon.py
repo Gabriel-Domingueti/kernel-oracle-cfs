@@ -17,13 +17,13 @@ class KernelLSTM(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
-
+    
 def discretizar_estado(delta_t_scaled):
-    if delta_t_scaled < 0.15:
-        return 0
-    elif delta_t_scaled < 0.50:
-        return 1
-    return 2
+    if delta_t_scaled < 0.08:
+        return 0  # S0: Leve / I/O-bound (< 0.8 ms)
+    elif delta_t_scaled < 0.35:
+        return 1  # S1: Médio (0.8 ms a 3.5 ms)
+    return 2      # S2: Exaustão / CPU-bound (> 3.5 ms)
 
 def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
     prob = float(matriz_prob[estado_ant, estado_atual])

@@ -22,17 +22,16 @@ class KernelLSTM(nn.Module):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 
-# 2. FUNÇÕES DA CADEIA DE MARKOV (3 ESTADOS)
+# 2. FUNÇÕES DA CADEIA DE MARKOV (Calibradas para a granularidade real do CFS)
 def discretizar_estado(delta_t_scaled):
-    if delta_t_scaled < 0.15:
-        return 0  # S0: Cooperativo (I/O-bound)
-    elif delta_t_scaled < 0.50:
-        return 1  # S1: Carga Moderada
-    return 2      # S2: Uso Intenso (CPU-bound)
+    if delta_t_scaled < 0.08:
+        return 0  # S0: Leve / I/O-bound (< 0.8 ms)
+    elif delta_t_scaled < 0.35:
+        return 1  # S1: Médio (0.8 ms a 3.5 ms)
+    return 2      # S2: Exaustão / CPU-bound (> 3.5 ms)
 
 def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
     prob = float(matriz_prob[estado_ant, estado_atual])
-    # Log-likelihood negativo normalizado em [0, 1] (limite de surpresa = -ln(1e-4))
     nll = -np.log(max(prob, 1e-4))
     return min(nll / (-np.log(1e-4)), 1.0)
 
@@ -81,7 +80,7 @@ def main():
     caminho_malware = os.path.join(BASE_DIR, "scripts", "malware_sim")
     if not os.path.exists(caminho_malware):
         print(f"[ERRO] Binário '{caminho_malware}' não encontrado!")
-        print("Compile-o primeiro com: gcc -o scripts/malware_sim scripts/malware_sim.c -lpthread")
+        print("Compile-o primeiro com: gcc -O0 -o scripts/malware_sim scripts/malware_sim.c -lpthread")
         sys.exit(1)
 
     print("[*] Injetando eBPF para captura de treinamento (LSTM + Cadeia de Markov)...")
@@ -92,17 +91,15 @@ def main():
     otimizador = torch.optim.Adam(modelo.parameters(), lr=0.005)
 
     tamanho_janela = 30
-    max_norm_ms = 50.0
-    alpha_hibrido = 0.60  # Peso: 60% LSTM + 40% Cadeia de Markov
+    max_norm_ms = 10.0    # Escala de 10ms ideal para o slice do CFS do Linux
+    alpha_hibrido = 0.60
     historico = deque(maxlen=tamanho_janela)
 
-    # Matriz de Contagem de Transições de Markov com Suavização de Laplace (3x3)
     num_estados = 3
     contagem_markov = np.ones((num_estados, num_estados), dtype=np.float64)
     matriz_markov = np.full((num_estados, num_estados), 1.0 / num_estados)
     estado_anterior = 0
 
-    # Fases: TREINO -> EVAL_NORMAL -> EVAL_MALWARE -> FIM
     fase = "TREINO"
     eventos_treino = 0
     meta_treino = 1500
@@ -137,7 +134,6 @@ def main():
             y_real = torch.tensor([[delta_t_scaled]], dtype=torch.float32)
 
             if fase == "TREINO":
-                # 1. Atualiza Rede LSTM
                 modelo.train()
                 otimizador.zero_grad()
                 predicao = modelo(x_tensor)
@@ -145,7 +141,6 @@ def main():
                 perda.backward()
                 otimizador.step()
 
-                # 2. Atualiza Matriz de Transição de Markov
                 contagem_markov[estado_anterior, estado_atual] += 1.0
 
                 eventos_treino += 1
@@ -153,7 +148,6 @@ def main():
                     print(f"    [Treino Híbrido] {eventos_treino}/{meta_treino} eventos | Loss LSTM: {perda.item():.6f}")
 
                 if eventos_treino >= meta_treino:
-                    # Normaliza as linhas da Matriz de Markov para somarem 1.0
                     matriz_markov = contagem_markov / contagem_markov.sum(axis=1, keepdims=True)
                     print("\n[+] Treinamento concluído! Matriz de Markov consolidada:")
                     print(np.round(matriz_markov, 4))
@@ -174,6 +168,7 @@ def main():
                     scores_lstm.append(erro_lstm)
                     scores_markov.append(erro_mk)
                     scores_hibrido.append(erro_hyb)
+                    estado_anterior = estado_atual
 
                     if len(y_true) % 250 == 0:
                         print(f"    [Avaliação Normal] {len(y_true)}/{meta_por_classe} amostras coletadas...")
@@ -185,6 +180,7 @@ def main():
                         fase = "EVAL_MALWARE"
 
             elif fase == "EVAL_MALWARE":
+                # Avalia apenas os eventos do malware_sim para não misturar estados com processos ociosos
                 if "malware_sim" in nome_tarefa:
                     modelo.eval()
                     with torch.no_grad():
@@ -198,6 +194,7 @@ def main():
                     scores_lstm.append(erro_lstm)
                     scores_markov.append(erro_mk)
                     scores_hibrido.append(erro_hyb)
+                    estado_anterior = estado_atual
 
                     amostras_malware = len(y_true) - meta_por_classe
                     if amostras_malware % 250 == 0:
@@ -205,8 +202,11 @@ def main():
 
                     if len(y_true) >= meta_por_classe * 2:
                         fase = "FIM"
+                return
 
-        estado_anterior = estado_atual
+        if fase == "TREINO":
+            estado_anterior = estado_atual
+
         if "malware_sim" not in nome_tarefa:
             historico.append(delta_t_scaled)
 
@@ -235,8 +235,11 @@ def main():
     fpr_h, tpr_h, thresholds_h = roc_curve(y_true_np, s_hibrido_np)
     auc_h = auc(fpr_h, tpr_h)
 
-    # Limiar ótimo pelo Índice J de Youden sobre o Modelo Híbrido
-    idx_otimo = np.argmax(tpr_h - fpr_h)
+    # Filtra o primeiro elemento (inf) do scikit-learn para encontrar o Limiar Ótimo real
+    mascara_finita = np.isfinite(thresholds_h)
+    j_scores = tpr_h[mascara_finita] - fpr_h[mascara_finita]
+    idx_finito = np.argmax(j_scores)
+    idx_otimo = np.where(mascara_finita)[0][idx_finito]
     limiar_otimo = float(thresholds_h[idx_otimo])
 
     # Gráfico 1: Curva ROC Comparativa Tripla
@@ -254,7 +257,7 @@ def main():
     plt.grid(alpha=0.3)
     plt.savefig(caminho_roc, dpi=300, bbox_inches='tight')
     plt.close()
-    print(f"[+] Curva ROC Comparativa salva em '{caminho_roc}'")
+    print(f"[+] Curva ROC Comparativa salva em '{caminho_roc}' (AUC Híbrido = {auc_h:.4f})")
 
     # Gráfico 2: Matriz de Confusão do Modelo Híbrido
     caminho_cm = os.path.join(BASE_DIR, "metrics", "matriz_confusao.png")
@@ -290,7 +293,7 @@ def main():
     plt.close()
     print(f"[+] Matriz de Transição de Markov salva em '{caminho_mk}'")
 
-    # 5. SERIALIZAÇÃO COM PICKLE (Incluindo Matriz de Markov e Peso Híbrido)
+    # 5. SERIALIZAÇÃO COM PICKLE
     artefato_modelo = {
         "model_state_dict": modelo.state_dict(),
         "markov_matrix": matriz_markov,
