@@ -17,13 +17,13 @@ class KernelLSTM(nn.Module):
     def forward(self, x):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
-    
+
 def discretizar_estado(delta_t_scaled):
     if delta_t_scaled < 0.08:
-        return 0  # S0: Leve / I/O-bound (< 0.8 ms)
+        return 0  # S0: Cooperativo / I/O-bound (< 0.8 ms)
     elif delta_t_scaled < 0.35:
-        return 1  # S1: Médio (0.8 ms a 3.5 ms)
-    return 2      # S2: Exaustão / CPU-bound (> 3.5 ms)
+        return 1  # S1: Moderado (0.8 ms a 3.5 ms)
+    return 2      # S2: Exaustão / CPU-bound (>= 3.5 ms)
 
 def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
     prob = float(matriz_prob[estado_ant, estado_atual])
@@ -95,18 +95,19 @@ def main():
 
     b = BPF(text=bpf_code)
 
+    # Whitelist de processos do sistema, ambiente gráfico XFCE/Mint e threads do Firefox
     WHITELIST = (
-        "python", "fwupd", "Xorg", "systemd", "journald",
-        "bash", "sudo", "sshd", "xfce", "xfwm", "xfdesktop",
-        "panel", "whisker", "Thunar", "kworker", "mint",
-        "dbus", "lightdm", "pipewire", "pulseaudio", "nm-",
-        "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs"
+        "python", "fwupd", "Xorg", "systemd", "journald", "bash", "sudo",
+        "sshd", "xfce", "xfwm", "xfdesktop", "panel", "whisker", "Thunar",
+        "kworker", "mint", "dbus", "lightdm", "pipewire", "pulseaudio",
+        "nm-", "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs",
+        "firefox", "Isolated Web", "Web Content", "WebExtensions",
+        "Compositor", "Renderer", "Socket Process", "DOM Worker", "Utility Process"
     )
 
-    # Rastreamento por processo: último estado de Markov e risco estocástico acumulado
     ultimo_estado_proc = defaultdict(int)
     risco_acumulado = defaultdict(float)
-    LIMITE_RISCO_IPS = 12.0
+    LIMITE_RISCO_IPS = 15.0
     pids_neutralizados = set()
 
     def ignorar_perdas(lost):
@@ -117,10 +118,10 @@ def main():
         nome_tarefa = evento.comm.decode('utf-8', 'replace').strip()
         pid_alvo = evento.tgid if evento.tgid != 0 else evento.pid
 
-        if pid_alvo in pids_neutralizados or pid_alvo <= 100:
+        if pid_alvo in pids_neutralizados or pid_alvo <= 300:
             return
 
-        if any(w in nome_tarefa for w in WHITELIST):
+        if any(w.lower() in nome_tarefa.lower() for w in WHITELIST):
             return
 
         delta_t_ms = evento.delta_t_ns / 1000000.0
@@ -139,15 +140,15 @@ def main():
             erro_mk = calcular_erro_markov(matriz_markov, estado_ant, estado_atual)
             score_hibrido = (alpha_hibrido * erro_lstm) + ((1.0 - alpha_hibrido) * erro_mk)
 
-            if score_hibrido > limite_erro_anomalia:
-                # Incrementa o risco proporcionalmente à improbabilidade da transição de Markov
-                incremento = 1.0 + erro_mk
+            # Só acumula risco se o score superar o limiar E o processo estiver retendo a CPU (S2)
+            if score_hibrido > limite_erro_anomalia and estado_atual == 2:
+                incremento = score_hibrido + erro_mk
                 risco_acumulado[nome_tarefa] += incremento
                 risco_atual = risco_acumulado[nome_tarefa]
 
                 print(
                     f"[!] ALERTA HÍBRIDO (Risco: {risco_atual:.1f}/{LIMITE_RISCO_IPS}) | "
-                    f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <12} | "
+                    f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <14} | "
                     f"Transição: S{estado_ant}->S{estado_atual} | Score: {score_hibrido:.4f}",
                     flush=True
                 )
@@ -163,8 +164,10 @@ def main():
                     except Exception as e:
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
-                # Decaimento estocástico: processos normais que voltam a S0 perdem risco acumulado
-                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.85)
+                # Decaimento rápido (x0.5) quando o processo cede a CPU (S0 ou S1)
+                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.50)
+                if risco_acumulado[nome_tarefa] < 0.05:
+                    risco_acumulado[nome_tarefa] = 0.0
                 historico.append(delta_t_scaled)
         else:
             historico.append(delta_t_scaled)
