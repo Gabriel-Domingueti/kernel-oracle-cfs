@@ -20,11 +20,7 @@ O repositório está organizado em três gerações incrementais (`v1`, `v2` e `
 
 1. **Modelagem Híbrida (Deep Learning + Processos Estocásticos):**
 
-   - **Rede LSTM:** Prevê a duração contínua da próxima fatia de CPU, representada por `ŷₜ`, a partir de uma janela deslizante de 30 eventos.
-
-     $$
-     E_{\text{LSTM}} = |y_t - \hat{y}_t|
-     $$
+   - **Rede LSTM:** Prevê a duração contínua da próxima fatia de CPU, representada por `ŷₜ`, a partir de uma janela deslizante de 30 eventos ($E{\text{LSTM}} = |y_t - \hat{y}_t|$).
 
    - **Cadeia de Markov (3 × 3):** Avalia a probabilidade de transição entre estados discretos de retenção de CPU ($S_0$: Leve, $S_1$: Moderado, $S_2$: Exaustão), usando log-verossimilhança negativa normalizada ($E_{\text{Markov}}$).
 
