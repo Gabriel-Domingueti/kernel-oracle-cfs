@@ -1,131 +1,74 @@
-# KernelOracle Sentinel: Prevenção de Intrusões (IPS) no Escalonador Linux CFS via eBPF, Deep Learning (LSTM) e Cadeias de Markov
+# KernelOracle-CFS: Monitoramento Preditivo e IPS Autônomo no Escalonador Linux via eBPF e Deep Learning Híbrido
 
-O **KernelOracle Sentinel** é um Sistema de Detecção e Prevenção de Intrusões (IDS/IPS) autônomo que opera diretamente na fronteira entre o espaço do kernel (Anel 0) e o espaço de usuário no Linux. Em vez de depender de assinaturas estáticas de arquivos ou regras heurísticas fixas, o Sentinel intercepta eventos de troca de contexto do escalonador **CFS (*Completely Fair Scheduler*)** em tempo real via **eBPF** (`sched:sched_switch`) para identificar e neutralizar ameaças *zero-day* de exaustão de CPU — como *cryptojackers* (RandomX/XMRig) e *ransomwares* — através de uma arquitetura híbrida que funde **Redes Neurais Recorrentes (LSTM)** e **Cadeias de Markov de Tempo Discreto (DTMC)**.
-
----
-
-## Arquitetura do Sistema e Fluxo de Operação
-
-1. **Telemetria no Anel 0 (eBPF / BCC):** Um programa eBPF acoplado ao tracepoint nativo `sched:sched_switch` calcula, em nanossegundos, o tempo exato de retenção de CPU ($\Delta t$) de cada thread antes de ceder o núcleo, extraindo o `pid`, o grupo de threads real (`tgid`) e o nome do processo (`comm`) com *overhead* residual.
-2. **Modelagem Temporal (Rede LSTM):** Uma rede *Long Short-Term Memory* analisa janelas deslizantes de 30 eventos consecutivos para prever a duração esperada da próxima fatia de tempo ($\hat{y}_t$), quantificando o erro de regressão temporal $E_{\text{LSTM}} = \vert{}\hat{y}_t - y_t\vert{}$.
-3. **Modelagem Estocástica (Cadeia de Markov — DTMC):** As fatias de tempo são discretizadas em três regimes operacionais do CFS ($S_0$: Cooperativo/I/O-bound, $S_1$: Moderado, $S_2$: Exaustão/CPU-bound). Uma matriz estocástica $P_{3 \times 3}$ com suavização de Laplace avalia a surpresa informacional (Log-Likelihood negativo) de cada transição $S_i \to S_j$.
-4. **Fusão Híbrida e Mitigação Ativa (IPS via `systemd`):** Os scores da LSTM ($60\%$) e da Cadeia de Markov ($40\%$) são fundidos e comparados contra o limiar ótimo estatístico calculado pelo **Índice $J$ de Youden**. Um **Acumulador de Risco Estocástico** aplica decaimento exponencial ($\times 0.85$) a processos benignos que retornam ao estado cooperativo $S_0$ e abate instantaneamente com `SIGKILL` (`os.kill(tgid, signal.SIGKILL)`) processos maliciosos que atingem o limiar crítico de retenção em $S_2 \to S_2$.
+O **KernelOracle-CFS** é um framework de segurança de sistemas e telemetria preditiva em nível de kernel para o escalonador *Completely Fair Scheduler* (CFS) do Linux. Combinando instrumentação não-intrusiva via **eBPF** (*Extended Berkeley Packet Filter*) no tracepoint `sched:sched_switch` com modelos de **Redes Neurais Recorrentes (LSTM)** e **Cadeias de Markov de Tempo Discreto (DTMC)**, o sistema modela a dinâmica estocástica de fatias de tempo ($\Delta t$) de execução de processos para detectar e neutralizar, em tempo real, ameaças de exaustão de CPU (*Cryptojacking* / *Resource Hijacking*).
 
 ---
 
-## Evolução do Projeto (`v1` $\to$ `v2` $\to$ `v3`)
+## Evolução Arquitetural do Projeto
 
-O repositório está organizado de forma modular para documentar toda a evolução experimental e arquitetural da pesquisa:
+O repositório está organizado em três gerações incrementais (`v1`, `v2` e `v3`), refletindo a evolução científica desde a prova de conceito até um Sistema de Prevenção de Intrusão (IPS) autônomo validado contra malwares reais:
 
-| Versão | Diretório | Foco Arquitetural | Principais Características |
-| :--- | :---: | :--- | :--- |
-| **v1** | [`./v1`](./v1) | **Prova de Conceito (PoC)** | Captura inicial de eventos do escalonador via eBPF e validação do acoplamento com tensores PyTorch em tempo real. |
-| **v2** | [`./v2`](./v2) | **Detector Online (IDS)** | Aprendizado online contínuo com rede LSTM, normalização de janelas temporais e calibração de carga com simulador multi-thread (`malware_sim.c`). |
-| **v3 (Atual)** | [`./v3`](./v3) | **Motor IPS Híbrido & Produção** | Fusão **LSTM + Cadeia de Markov**, treino único serializado (`pickle`), calibração via Curva ROC (Índice de Youden), acumulador estocástico de risco, abate ativo (`SIGKILL`) e daemon nativo do `systemd` sem caminhos fixos. |
-
----
-
-## Síntese dos Resultados Experimentais (v3)
-
-A validação científica na **v3** foi conduzida sobre um dataset balanceado de $N = 1000$ trocas de contexto reais do kernel Linux ($500$ amostras de processos legítimos na Classe $0$ e $500$ amostras de ataque multi-thread na Classe $1$), demonstrando que a arquitetura híbrida supera significativamente os modelos isolados[cite: 9, 10]:
-
-| Arquitetura Avaliada | ROC-AUC | Acurácia (%) | Precisão (%) | Recall / TPR (%) | Especificidade / TNR (%) | F1-Score (%) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| Cadeia de Markov Isolada (DTMC) | 0.9717 | — | — | — | — | — |
-| Rede LSTM Isolada | 0.9801 | — | — | — | — | — |
-| **Híbrido (LSTM + Markov)** | **0.9905** | **97.70** | **96.86** | **98.60** | **96.80** | **97.72** |
-
-*Nota: Métricas de classificação binária avaliadas no limiar ótimo de Youden ($\tau = 0.0194$), resultando em $TP = 493$, $TN = 484$, $FP = 16$, $FN = 7$ e Índice de Youden $J = 0.9540$[cite: 9, 10].*
-
-### Artefatos Gráficos Gerados Automaticamente (`v3/metrics/`)
-* **`curva_roc.png`**: Comparativo triplo das Curvas ROC (LSTM Isolada vs. Cadeia de Markov vs. Modelo Híbrido)[cite: 9].
-* **`matriz_confusao.png`**: Matriz de confusão do detector híbrido no limiar ótimo[cite: 10].
-* **`matriz_transicao_markov.png`**: Mapa de calor das probabilidades empíricas de transição de estados ($S_0, S_1, S_2$) do escalonador CFS[cite: 11].
+| Versão | Foco Arquitetural | Modelagem Matemática | Ação de Resposta | Diretório |
+| :--- | :--- | :--- | :--- | :---: |
+| **v1** | Prova de Conceito (PoC) | Coleta eBPF bruta + Rede LSTM simples | Monitoramento passivo em terminal | [`./v1`](./v1) |
+| **v2** | Detecção de Anomalias (IDS) | Rede LSTM com limiar estático empírico | Alertas visuais de desvio de $\Delta t$ | [`./v2`](./v2) |
+| **v3 (Atual)** | **IPS Autônomo Híbrido** | **Fusão LSTM ($60\%$) + Cadeia de Markov $3 \times 3$ ($40\%$) + Limiar Ótimo de Youden** | **Neutralização ativa via `SIGKILL` (`< 1s`) e daemon `systemd`** | [`./v3`](./v3) |
 
 ---
 
-## Estrutura Geral do Repositório
+## Destaques da Arquitetura v3 (KernelOracle Sentinel)
 
-```text
-kernel-oracle-cfs/
-├── v1/                             # Prova de Conceito inicial (Telemetria eBPF + PyTorch)
-├── v2/                             # Detector IDS com aprendizado online contínuo
-├── v3/                             # Versão de Produção: IPS Híbrido (LSTM + Markov) + Systemd Daemon
-│   ├── artifacts/                  # Modelo e matrizes serializados (sentinel_bundle.pkl)
-│   ├── metrics/                    # Gráficos científicos em 300 DPI (ROC, Confusão e Markov)
-│   ├── scripts/                    # Pipeline de treino/avaliação, daemon IPS e simulador em C
-│   ├── systemd/                    # Template agnóstico do serviço sentinel.service
-│   ├── install_service.sh          # Instalador automatizado do daemon no systemd
-│   ├── requirements.txt            # Dependências Python (CPU-only)
-│   └── README.md                   # Documentação matemática e guia completo da v3
-└── README.md                       # Visão geral do projeto (este arquivo)
-```
+1. **Modelagem Híbrida (Deep Learning + Processos Estocásticos):**
+   * **Rede LSTM:** Prevê a duração contínua da próxima fatia de CPU ($\hat{y}_t$) a partir de uma janela deslizante de 30 eventos ($E_{\text{LSTM}} = |y_t - \hat{y}_t|$).
+   * **Cadeia de Markov ($3 \times 3$):** Avalia a probabilidade de transição entre estados discretos de retenção de CPU ($S_0$: Leve `< 0.8 ms`, $S_1$: Moderado `0.8 - 3.5 ms`, $S_2$: Exaustão `>= 3.5 ms`) usando log-verossimilhança negativa normalizada ($E_{\text{Markov}}$).
+   * **Score Híbrido:** $S_{\text{Híbrido}}(t) = 0.60 \cdot E_{\text{LSTM}}(t) + 0.40 \cdot E_{\text{Markov}}(t)$.
+
+2. **Calibração Estatística Não-Enviesada (Índice $J$ de Youden):**
+   * O limiar de decisão ótimo ($\theta^* = 0.0480$) é extraído analiticamente da Curva ROC sob tráfego real do kernel, maximizando $J = \text{TPR} - \text{FPR}$ sem necessidade de ajustes manuais.
+
+3. **Proteção Estrutural de Processos do SO e Navegadores:**
+   * Verificação em tempo real via `/proc/<tid>/status` (resolução de `TGID` e `UID`) e `/proc/<tgid>/exe` (*Trusted Path Verification*), garantindo **zero falsos positivos** sobre binários nativos do sistema operacional (GNOME, KDE, XFCE, Wayland, Xorg, `systemd`) e motores de navegadores modernos (Firefox/Gecko, Chrome/Chromium/Blink, WebKit).
 
 ---
 
-## Guia Rápido de Execução (Versão de Produção — `v3`)
+## Resultados Experimentais e Validação Científica (v3)
 
-Para instruções detalhadas e protocolos de teste com payloads reais de *cryptojacking* (**XMRig / RandomX**), consulte a [documentação dedicada da v3](./v3/README.md). Abaixo está o resumo rápido para colocar o IPS em operação:
+Os experimentos foram conduzidos sob carga real no Fedora Linux (Kernel 6.8+) e validados em ambiente isolado (Linux Mint em QEMU/KVM), avaliando $N = 1000$ janelas temporais consecutivas ($500$ amostras de baseline orgânico na Classe 0 e $500$ amostras de ataque multi-thread na Classe 1):
 
-### 1. Instalar Dependências do Kernel e Compiladores
+| Arquitetura Avaliada | ROC-AUC | Ganho Relativo (vs. Markov) | Limiar Ótimo ($\theta^*$) | Acurácia | Precisão | Recall (TPR) | Especificidade (TNR) | F1-Score |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Cadeia de Markov Isolada** | `0.8840` | Baseline | — | — | — | — | — | — |
+| **Rede LSTM Isolada** | `0.9542` | `+7.02%` | — | — | — | — | — | — |
+| **KernelOracle Híbrido (v3)** | **`0.9651`** | **`+8.11%`** | **`0.0480`** | **`91.50%`** | **`91.75%`** | **`91.20%`** | **`91.80%`** | **`91.47%`** |
 
-**Debian / Ubuntu / Linux Mint:**
+### Artefatos Gráficos de Validação (`v3/metrics/`)
 
-```bash
-sudo apt update
-sudo apt install -y build-essential bpfcc-tools linux-headers-$(uname -r) python3-bpfcc python3-venv
-```
+<p align="center">
+  <img src="./v3/metrics/curva_roc.png" width="48%" alt="Curva ROC Comparativa" />
+  <img src="./v3/metrics/matriz_confusao.png" width="48%" alt="Matriz de Confusão" />
+</p>
+<p align="center">
+  <img src="./v3/metrics/matriz_transicao_markov.png" width="55%" alt="Matriz de Transição de Markov" />
+</p>
 
-**Fedora / RHEL:**
+### Validação Prática contra Payload Real (XMRig v6.21.0 RandomX)
 
-```bash
-sudo dnf install -y bcc-tools python3-bcc kernel-devel-$(uname -r) kernel-headers gcc
-```
-
-### 2. Criar Ambiente Virtual e Instalar Pacotes Python
-
-```bash
-git clone [https://github.com/Gabriel-Domingueti/kernel-oracle-cfs.git](https://github.com/Gabriel-Domingueti/kernel-oracle-cfs.git)
-cd kernel-oracle-cfs/v3
-python3 -m venv ../venv --system-site-packages
-source ../venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Compilar Simulador, Treinar Modelo Híbrido e Gerar Gráficos
-
-```bash
-gcc -O0 -o scripts/malware_sim scripts/malware_sim.c -lpthread
-sudo ../venv/bin/python scripts/train_and_eval.py
-```
-
-### 4. Instalar e Ativar o Daemon IPS no `systemd`
-
-```bash
-chmod +x install_service.sh
-./install_service.sh
-```
-
-### 5. Monitorar o Abate de Ameaças em Tempo Real
-
-Em um terminal, acompanhe os logs do serviço:
-
-```bash
-sudo journalctl -u sentinel.service -f
-```
-
-Em outro terminal, execute o simulador de estresse:
-
-```bash
-./scripts/malware_sim
-```
-
-O daemon identificará a retenção anômala no estado $S_2 \to S_2$ e encerrará o grupo de processos automaticamente com `SIGKILL`.
+Submetido ao minerador real **XMRig v6.21.0** em sandbox isolada (QEMU/KVM sem placa de rede ativa), o acumulador estocástico de risco do daemon IPS (`sentinel.service`) detectou a anomalia de transição (`S1 -> S2` e `S2 -> S1`) e neutralizou o processo atacante (`PID 3467`) com `SIGKILL` em **menos de 1 segundo** após a alocação do dataset RandomX, impedindo o sequestro de recursos da CPU.
 
 ---
 
-## Requisitos de Ambiente e Reprodutibilidade
+## Guia Rápido de Execução (v3)
 
-* **Sistema Operacional:** Linux com kernel $\ge 5.15$ (testado nos kernels $6.8+$ e $6.11+$ em Fedora Workstation e Linux Mint / Ubuntu).
-* **Execução em CPU:** Projetado especificamente para operar sem necessidade de GPU dedicada (`torch+cpu`), viabilizando a implantação direta em servidores de produção, máquinas virtuais e ambientes de borda (*edge*).
-* **Privilégios:** Requer acesso `root` (`CAP_BPF` / `CAP_SYS_ADMIN`) para injeção do bytecode eBPF no verificador do kernel e emissão de sinais `SIGKILL` entre processos.
+1. Acessar o diretório da v3 e compilar o simulador de estresse:
+   `cd v3 && gcc scripts/malware_sim.c -o scripts/malware_sim -lpthread`
+
+2. Executar o pipeline de treinamento, validação ROC e geração dos gráficos:
+   `sudo ../venv/bin/python scripts/train_and_eval.py`
+
+3. Instalar e iniciar o daemon IPS como serviço nativo do systemd:
+   `chmod +x install_service.sh && ./install_service.sh`
+
+4. Monitorar a telemetria e ações de abate ao vivo:
+   `sudo journalctl -u sentinel.service -f`
+
+Consulte a [documentação técnica completa da v3](./v3/README.md) para detalhes matemáticos, arquitetura do código e instruções de reprodutibilidade.

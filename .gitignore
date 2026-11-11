@@ -10,4 +10,4 @@ scripts/stress_cfs
 # Ambientes virtuais e cache
 venv/
 __pycache__/
-.streamlit/
+.streamlit/v3/artifacts/*.pkl
