@@ -96,13 +96,14 @@ def main():
     b = BPF(text=bpf_code)
 
     WHITELIST = (
-        "python", "fwupd", "Xorg", "systemd", "journald", "bash", "sudo",
-        "sshd", "xfce", "xfwm", "xfdesktop", "xfsettingsd", "panel", "whisker",
-        "Thunar", "tumblerd", "kworker", "mint", "dbus", "lightdm", "pipewire",
-        "pulseaudio", "nm-", "NetworkManager", "polkit", "udisksd", "upowerd",
-        "gvfs", "evolution", "pg-agent", "gpg-agent", "ssh-agent", "firefox",
-        "Isolated Web", "Web Content", "WebExtensions", "Compositor",
-        "Renderer", "Socket Process", "DOM Worker", "Utility Process", "git"
+        "python", "fwupd", "Xorg", "InputThread", "gmain", "gdbus", "systemd",
+        "journald", "bash", "sudo", "sshd", "xfce", "xfwm", "xfdesktop",
+        "xfsettingsd", "panel", "whisker", "Thunar", "tumblerd", "kworker",
+        "mint", "dbus", "lightdm", "pipewire", "pulseaudio", "nm-",
+        "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs", "evolution",
+        "pg-agent", "gpg-agent", "ssh-agent", "firefox", "Isolated Web",
+        "Web Content", "WebExtensions", "Compositor", "Renderer",
+        "Socket Process", "DOM Worker", "Utility Process", "git"
     )
 
     ultimo_estado_proc = defaultdict(int)
@@ -147,12 +148,13 @@ def main():
                 risco_acumulado[nome_tarefa] += incremento
                 risco_atual = risco_acumulado[nome_tarefa]
 
-                print(
-                    f"[!] ALERTA HÍBRIDO (Risco: {risco_atual:.1f}/{LIMITE_RISCO_IPS}) | "
-                    f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <14} | "
-                    f"Transição: S{estado_ant}->S{estado_atual} | Score: {score_hibrido:.4f}",
-                    flush=True
-                )
+                if risco_atual >= 3.5:
+                    print(
+                        f"[!] ALERTA HÍBRIDO (Risco: {risco_atual:.1f}/{LIMITE_RISCO_IPS}) | "
+                        f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <14} | "
+                        f"Transição: S{estado_ant}->S{estado_atual} | Score: {score_hibrido:.4f}",
+                        flush=True
+                    )
 
                 if risco_atual >= LIMITE_RISCO_IPS:
                     try:
