@@ -2,6 +2,7 @@ import os
 import sys
 import signal
 import pickle
+import numpy as np
 import torch
 import torch.nn as nn
 from collections import deque, defaultdict
@@ -17,7 +18,18 @@ class KernelLSTM(nn.Module):
         out, _ = self.lstm(x)
         return self.fc(out[:, -1, :])
 
-# 2. CÓDIGO eBPF (Usando TRACEPOINT_PROBE oficial e sintaxe start_time.update do BCC)
+def discretizar_estado(delta_t_scaled):
+    if delta_t_scaled < 0.15:
+        return 0
+    elif delta_t_scaled < 0.50:
+        return 1
+    return 2
+
+def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
+    prob = float(matriz_prob[estado_ant, estado_atual])
+    nll = -np.log(max(prob, 1e-4))
+    return min(nll / (-np.log(1e-4)), 1.0)
+
 bpf_code = """
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
@@ -37,7 +49,6 @@ TRACEPOINT_PROBE(sched, sched_switch) {
     u32 prev_pid = args->prev_pid;
     u32 next_pid = args->next_pid;
 
-    // Sintaxe correta do BCC para atualizar o mapa
     start_time.update(&next_pid, &ts);
 
     u64 *tsp = start_time.lookup(&prev_pid);
@@ -59,7 +70,6 @@ def main():
     except PermissionError:
         pass
 
-    # Deteta automaticamente a pasta v3/ independente do computador ou utilizador
     BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     caminho_pkl = os.path.join(BASE_DIR, "artifacts", "sentinel_bundle.pkl")
 
@@ -73,24 +83,27 @@ def main():
     tamanho_janela = bundle["window_size"]
     limite_erro_anomalia = bundle["threshold"]
     max_norm_ms = bundle["max_norm_ms"]
+    matriz_markov = bundle["markov_matrix"]
+    alpha_hibrido = bundle.get("alpha_hibrido", 0.60)
     historico = deque(bundle["baseline_history"], maxlen=tamanho_janela)
 
     modelo = KernelLSTM()
     modelo.load_state_dict(bundle["model_state_dict"])
     modelo.eval()
 
-    print(f"[*] KernelOracle IPS Daemon ativo | Limiar: {limite_erro_anomalia:.4f}", flush=True)
+    print(f"[*] KernelOracle Híbrido (LSTM + Markov) IPS ativo | Limiar: {limite_erro_anomalia:.4f}", flush=True)
 
     b = BPF(text=bpf_code)
 
-    # Lista de processos críticos do sistema operativo que nunca devem ser encerrados
     WHITELIST = (
         "python", "fwupd", "Xorg", "systemd", "journald",
         "bash", "sudo", "sshd", "xfce4", "Thunar", "kworker"
     )
 
-    strikes = defaultdict(int)
-    LIMITE_STRIKES = 8
+    # Rastreamento por processo: último estado de Markov e risco estocástico acumulado
+    ultimo_estado_proc = defaultdict(int)
+    risco_acumulado = defaultdict(float)
+    LIMITE_RISCO_IPS = 8.0
     pids_neutralizados = set()
 
     def ignorar_perdas(lost):
@@ -109,31 +122,46 @@ def main():
 
         delta_t_ms = evento.delta_t_ns / 1000000.0
         delta_t_scaled = min(delta_t_ms / max_norm_ms, 1.0)
+        estado_atual = discretizar_estado(delta_t_scaled)
+        estado_ant = ultimo_estado_proc[nome_tarefa]
+        ultimo_estado_proc[nome_tarefa] = estado_atual
 
         if len(historico) == tamanho_janela:
             x_tensor = torch.tensor(list(historico), dtype=torch.float32).view(1, tamanho_janela, 1)
 
             with torch.no_grad():
                 predicao = modelo(x_tensor)
-                erro_absoluto = abs(predicao.item() - delta_t_scaled)
+                erro_lstm = abs(predicao.item() - delta_t_scaled)
 
-            if erro_absoluto > limite_erro_anomalia:
-                strikes[nome_tarefa] += 1
-                contagem_atual = strikes[nome_tarefa]
+            erro_mk = calcular_erro_markov(matriz_markov, estado_ant, estado_atual)
+            score_hibrido = (alpha_hibrido * erro_lstm) + ((1.0 - alpha_hibrido) * erro_mk)
 
-                print(f"[!] ALERTA IDS ({contagem_atual}/{LIMITE_STRIKES}) | PID: {pid_alvo: <6} | Processo: {nome_tarefa: <15} | Erro: {erro_absoluto:.4f}", flush=True)
+            if score_hibrido > limite_erro_anomalia:
+                # Incrementa o risco proporcionalmente à improbabilidade da transição de Markov
+                incremento = 1.0 + erro_mk
+                risco_acumulado[nome_tarefa] += incremento
+                risco_atual = risco_acumulado[nome_tarefa]
 
-                if contagem_atual >= LIMITE_STRIKES:
+                print(
+                    f"[!] ALERTA HÍBRIDO (Risco: {risco_atual:.1f}/{LIMITE_RISCO_IPS}) | "
+                    f"PID: {pid_alvo: <6} | Proc: {nome_tarefa: <12} | "
+                    f"Transição: S{estado_ant}->S{estado_atual} | Score: {score_hibrido:.4f}",
+                    flush=True
+                )
+
+                if risco_atual >= LIMITE_RISCO_IPS:
                     try:
                         os.kill(pid_alvo, signal.SIGKILL)
                         pids_neutralizados.add(pid_alvo)
-                        strikes[nome_tarefa] = 0
+                        risco_acumulado[nome_tarefa] = 0.0
                         print(f"[#] AÇÃO IPS: Ameaça '{nome_tarefa}' (PID {pid_alvo}) ABATIDA com SIGKILL!", flush=True)
                     except ProcessLookupError:
                         pass
                     except Exception as e:
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
+                # Decaimento estocástico: processos normais que voltam a S0 perdem risco acumulado
+                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.85)
                 historico.append(delta_t_scaled)
         else:
             historico.append(delta_t_scaled)
