@@ -97,13 +97,16 @@ def main():
 
     WHITELIST = (
         "python", "fwupd", "Xorg", "systemd", "journald",
-        "bash", "sudo", "sshd", "xfce4", "Thunar", "kworker"
+        "bash", "sudo", "sshd", "xfce", "xfwm", "xfdesktop",
+        "panel", "whisker", "Thunar", "kworker", "mint",
+        "dbus", "lightdm", "pipewire", "pulseaudio", "nm-",
+        "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs"
     )
 
     # Rastreamento por processo: último estado de Markov e risco estocástico acumulado
     ultimo_estado_proc = defaultdict(int)
     risco_acumulado = defaultdict(float)
-    LIMITE_RISCO_IPS = 8.0
+    LIMITE_RISCO_IPS = 12.0
     pids_neutralizados = set()
 
     def ignorar_perdas(lost):
