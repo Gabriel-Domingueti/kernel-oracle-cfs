@@ -107,7 +107,7 @@ def main():
 
     ultimo_estado_proc = defaultdict(int)
     risco_acumulado = defaultdict(float)
-    LIMITE_RISCO_IPS = 15.0
+    LIMITE_RISCO_IPS = 8.0
     pids_neutralizados = set()
 
     def ignorar_perdas(lost):
@@ -142,7 +142,7 @@ def main():
 
             # Só acumula risco se o score superar o limiar E o processo estiver retendo a CPU (S2)
             if score_hibrido > limite_erro_anomalia and estado_atual == 2:
-                incremento = score_hibrido + erro_mk
+                incremento = 1.0 + score_hibrido + erro_mk
                 risco_acumulado[nome_tarefa] += incremento
                 risco_atual = risco_acumulado[nome_tarefa]
 
@@ -165,7 +165,7 @@ def main():
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
                 # Decaimento rápido (x0.5) quando o processo cede a CPU (S0 ou S1)
-                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.50)
+                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.90)
                 if risco_acumulado[nome_tarefa] < 0.05:
                     risco_acumulado[nome_tarefa] = 0.0
                 historico.append(delta_t_scaled)
