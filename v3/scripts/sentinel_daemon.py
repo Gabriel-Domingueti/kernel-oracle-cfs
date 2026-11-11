@@ -22,7 +22,7 @@ def discretizar_estado(delta_t_scaled):
     if delta_t_scaled < 0.08:
         return 0  # S0: Cooperativo / I/O-bound (< 0.8 ms)
     elif delta_t_scaled < 0.35:
-        return 1  # S1: Moderado (0.8 ms a 3.5 ms)
+        return 1  # S1: Moderado / Disputa Multi-thread (0.8 ms a 3.5 ms)
     return 2      # S2: Exaustão / CPU-bound (>= 3.5 ms)
 
 def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
@@ -95,14 +95,14 @@ def main():
 
     b = BPF(text=bpf_code)
 
-    # Whitelist de processos do sistema, ambiente gráfico XFCE/Mint e threads do Firefox
     WHITELIST = (
         "python", "fwupd", "Xorg", "systemd", "journald", "bash", "sudo",
-        "sshd", "xfce", "xfwm", "xfdesktop", "panel", "whisker", "Thunar",
-        "kworker", "mint", "dbus", "lightdm", "pipewire", "pulseaudio",
-        "nm-", "NetworkManager", "polkit", "udisksd", "upowerd", "gvfs",
-        "firefox", "Isolated Web", "Web Content", "WebExtensions",
-        "Compositor", "Renderer", "Socket Process", "DOM Worker", "Utility Process"
+        "sshd", "xfce", "xfwm", "xfdesktop", "xfsettingsd", "panel", "whisker",
+        "Thunar", "tumblerd", "kworker", "mint", "dbus", "lightdm", "pipewire",
+        "pulseaudio", "nm-", "NetworkManager", "polkit", "udisksd", "upowerd",
+        "gvfs", "evolution", "pg-agent", "gpg-agent", "ssh-agent", "firefox",
+        "Isolated Web", "Web Content", "WebExtensions", "Compositor",
+        "Renderer", "Socket Process", "DOM Worker", "Utility Process", "git"
     )
 
     ultimo_estado_proc = defaultdict(int)
@@ -140,9 +140,10 @@ def main():
             erro_mk = calcular_erro_markov(matriz_markov, estado_ant, estado_atual)
             score_hibrido = (alpha_hibrido * erro_lstm) + ((1.0 - alpha_hibrido) * erro_mk)
 
-            # Só acumula risco se o score superar o limiar E o processo estiver retendo a CPU (S2)
-            if score_hibrido > limite_erro_anomalia and estado_atual == 2:
-                incremento = 1.0 + score_hibrido + erro_mk
+            # Captura retenção de CPU tanto single-thread (S2) quanto disputa multi-thread na VM (S1)
+            if score_hibrido > limite_erro_anomalia and estado_atual >= 1:
+                peso_estado = 1.5 if estado_atual == 2 else 1.0
+                incremento = peso_estado + score_hibrido + erro_mk
                 risco_acumulado[nome_tarefa] += incremento
                 risco_atual = risco_acumulado[nome_tarefa]
 
@@ -164,10 +165,9 @@ def main():
                     except Exception as e:
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
-                # Decaimento rápido (x0.5) quando o processo cede a CPU (S0 ou S1)
-                risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] * 0.90)
-                if risco_acumulado[nome_tarefa] < 0.05:
-                    risco_acumulado[nome_tarefa] = 0.0
+                # Decai suavemente (-0.15) apenas quando o processo é cooperativo (S0)
+                if estado_atual == 0 and risco_acumulado[nome_tarefa] > 0.0:
+                    risco_acumulado[nome_tarefa] = max(0.0, risco_acumulado[nome_tarefa] - 0.15)
                 historico.append(delta_t_scaled)
         else:
             historico.append(delta_t_scaled)
