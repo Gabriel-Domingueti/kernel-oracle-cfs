@@ -55,9 +55,33 @@ Os experimentos foram conduzidos sob carga real no Fedora Linux (Kernel 6.8+) e 
   <img src="./v3/metrics/matriz_transicao_markov.png" width="55%" alt="Matriz de Transição de Markov" />
 </p>
 
-### Validação Prática contra Payload Real (XMRig v6.21.0 RandomX)
+### Validação Prática Multi-Ameaça em Sandbox (MITRE ATT&CK)
 
-Submetido ao minerador real **XMRig v6.21.0** em sandbox isolada (QEMU/KVM sem placa de rede ativa), o acumulador estocástico de risco do daemon IPS (`sentinel.service`) detectou a anomalia de transição (`S1 -> S2` e `S2 -> S1`) e neutralizou o processo atacante (`PID 3467`) com `SIGKILL` em **menos de 1 segundo** após a alocação do dataset RandomX, impedindo o sequestro de recursos da CPU.
+Para comprovar que o **KernelOracle Sentinel (v3)** atua como um IPS comportamental agnóstico à assinatura do binário, o daemon foi submetido a 5 classes distintas de payloads ofensivos em ambiente isolado (QEMU/KVM sem interface de rede). Todos os ataques foram detectados no escalonador CFS e neutralizados via `SIGKILL` (incluindo árvores de processos `fork()` via `killpg`) em **menos de 1 segundo**:
+
+| Classe de Ameaça | Técnica MITRE ATT&CK | Payload / Binário Avaliado | Padrão no Escalonador CFS | PID / PGID Alvo | Tempo de Reação IPS | Status Final |
+| :--- | :---: | :--- | :--- | :---: | :---: | :---: |
+| **Cryptojacking (Memory-Hard)** | `T1496` | `XMRig v6.21.0` (`RandomX`) | Alocação de 2.3 GB + Exaustão $S_1 \to S_1$ | `PID 5866` | `< 1.0 s` (`23:16:10`) | **`SIGKILL` (`Morto`)** |
+| **Cryptojacking (ALU-Bound)** | `T1496` | `cpuminer-multi 1.3.7` (`SHA-256d`) | 4 threads intensivas em inteiros ($S_0 \to S_2$) | `PID 7121` | `< 1.0 s` (`23:14:12`) | **`SIGKILL` (`Morto`)** |
+| **Ransomware (Mass Encryption)** | `T1486` | `ransom_aes` (`AES-256-CBC` 4-way) | Processos filhos via `fork()` em alta retenção | `PIDs 5810-5812` | `< 1.0 s` (`23:07:51`) | **`SIGKILL` (`Signal 9`)** |
+| **Password Cracker (Brute Force)** | `T1110` | `shadow_cracker` (`SHA-512` multi-core) | Disputa multi-processo contínua ($S_1 \to S_1$) | `PIDs 7116-7118` | `< 1.0 s` (`23:13:02`) | **`SIGKILL` (`Morto`)** |
+| **Endpoint DoS (CPU Flood)** | `T1499` | `dos_flood` (`stress-ng matrixprod`) | Exaustão severa de FPU ($S_2 \to S_2$) | `PIDs 5846-5847` | `0.11 s` (`23:12:57`) | **`SIGKILL` (`Abatido`)** |
+
+---
+
+#### Evidências Visuais de Contenção em Tempo Real (`journalctl` vs. Terminal do Atacante)
+
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_xmrig.png" width="48%" alt="Abate XMRig RandomX" />
+  <img src="./metrics/evidence/ips_kill_cpuminer.png" width="48%" alt="Abate Cpuminer SHA256d" />
+</p>
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_ransom_aes.png" width="48%" alt="Abate Ransomware AES-256" />
+  <img src="./metrics/evidence/ips_kill_shadow_cracker.png" width="48%" alt="Abate Cracker SHA-512" />
+</p>
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_dos_flood.png" width="55%" alt="Abate Trojan DoS MatrixProd" />
+</p>
 
 ---
 
