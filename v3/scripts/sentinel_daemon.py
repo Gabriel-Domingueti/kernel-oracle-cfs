@@ -30,7 +30,6 @@ def calcular_erro_markov(matriz_prob, estado_ant, estado_atual):
     nll = -np.log(max(prob, 1e-4))
     return min(nll / (-np.log(1e-4)), 1.0)
 
-# Diretórios oficiais do sistema operacional (protege GNOME, KDE, XFCE, Cinnamon, Wayland, Xorg e Browsers instalados)
 DIRETORIOS_CONFIAVEIS_SO = (
     "/usr/bin/",
     "/usr/sbin/",
@@ -46,29 +45,26 @@ DIRETORIOS_CONFIAVEIS_SO = (
     "/var/lib/flatpak/"
 )
 
-# Assinaturas universais de navegadores (Gecko, Blink, Chromium, WebKit), ambientes gráficos e ferramentas base
+# Assinaturas específicas sem substrings curtas ambíguas (evita falso match com 'sh' em 'sha256'/'shadow')
 ASSINATURAS_PROTEGIDAS = (
-    # Navegadores Web e motores de renderização
     "firefox", "gecko", "glean", "chrom", "google-chrome", "brave", "vivaldi",
     "opera", "msedge", "epiphany", "midori", "tor-browser", "waterfox", "librewolf",
     "zen-browser", "webkit", "blink", "electron", "isolated web", "web content",
     "webextensions", "compositor", "renderer", "socket process", "dom worker",
     "utility process", "gpu-process", "crashpad", "sandbox", "zygote",
-    # Todos os Desktop Environments (GNOME, KDE, XFCE, Cinnamon, MATE, LXQt, Hyprland, Sway)
     "gnome", "mutter", "gsd-", "gvfs", "nautilus", "evolution", "kded", "kwin",
     "plasmashell", "akonadi", "dolphin", "krunner", "xfce", "xfwm", "xfdesktop",
     "xfsettingsd", "panel", "whisker", "thunar", "tumblerd", "cinnamon", "nemo",
     "muffin", "mate-", "caja", "marco", "lxqt", "openbox", "wayland", "xwayland",
     "xorg", "inputthread", "sway", "hyprland", "wlroots", "picom", "ibus",
-    # Daemons padrão do Linux, Áudio, Rede e Desenvolvimento
-    "systemd", "imedated", "journald", "udev", "dbus", "polkit", "networkmanager",
-    "nm-", "wpa_supplicant", "avahi", "cups", "bluetooth", "upower", "udisksd",
-    "pipewire", "wireplumber", "pulseaudio", "alsa", "rtkit", "colord", "fwupd",
+    "systemd", "imedated", "journald", "udevd", "dbus", "polkit", "networkmanager",
+    "nm-applet", "wpa_supplicant", "avahi", "cupsd", "bluetoothd", "upowerd", "udisksd",
+    "pipewire", "wireplumber", "pulseaudio", "rtkit", "colord", "fwupd",
     "packagekit", "apt", "dpkg", "dnf", "pacman", "flatpak", "snapd", "lightdm",
-    "gdm", "sddm", "bash", "zsh", "fish", "sh", "sudo", "su", "sshd", "gpg-agent",
-    "ssh-agent", "pg-agent", "gcr-", "gnome-keyring", "kwalletd", "python", "git",
-    "code", "codium", "nvim", "vim", "gcc", "clang", "cargo", "rust", "java",
-    "gmain", "gdbus", "dconf", "kworker", "ksoftirqd", "migration", "rcu_"
+    "gdm", "sddm", "bash", "zsh", "fish", "sudo", "sshd", "gpg-agent",
+    "ssh-agent", "pg-agent", "gcr-", "gnome-keyring", "kwalletd", "python",
+    "code", "codium", "nvim", "vim", "gmain", "gdbus", "dconf",
+    "kworker", "ksoftirqd", "migration", "rcu_"
 )
 
 cache_proc_info = {}
@@ -78,6 +74,7 @@ def obter_info_processo_real(tid, comm_thread):
         return cache_proc_info[tid]
 
     tgid = tid
+    ppid = 0
     uid = 1000
     caminho_exe = ""
     cmdline = ""
@@ -88,6 +85,8 @@ def obter_info_processo_real(tid, comm_thread):
             for linha in f:
                 if linha.startswith("Tgid:"):
                     tgid = int(linha.split()[1])
+                elif linha.startswith("PPid:"):
+                    ppid = int(linha.split()[1])
                 elif linha.startswith("Uid:"):
                     uid = int(linha.split()[1])
                     break
@@ -105,21 +104,17 @@ def obter_info_processo_real(tid, comm_thread):
     except Exception:
         pass
 
-    # Verifica se é um processo protegido do sistema ou navegador
     identidade = f"{comm_thread} {nome_processo_pai} {caminho_exe} {cmdline}".lower()
     protegido = False
 
-    # 1. Daemons de sistema do Linux (UID de sistema < 1000, exceto se rodar de /tmp ou /home)
     if uid < 1000 and caminho_exe.startswith(DIRETORIOS_CONFIAVEIS_SO):
         protegido = True
-    # 2. Binários oficiais instalados nos diretórios raiz do SO (/usr/bin, /usr/lib, /opt, /snap, flatpak)
     elif caminho_exe.startswith(DIRETORIOS_CONFIAVEIS_SO):
         protegido = True
-    # 3. Qualquer processo ou thread com assinatura de navegador ou subsistema gráfico
     elif any(assinatura in identidade for assinatura in ASSINATURAS_PROTEGIDAS):
         protegido = True
 
-    info = (tgid, nome_processo_pai, caminho_exe, protegido)
+    info = (tgid, ppid, nome_processo_pai, caminho_exe, protegido)
     if len(cache_proc_info) > 4096:
         cache_proc_info.clear()
     cache_proc_info[tid] = info
@@ -203,7 +198,7 @@ def main():
             return
 
         comm_thread = evento.comm.decode('utf-8', 'replace').strip()
-        pid_alvo, nome_pai, caminho_exe, protegido = obter_info_processo_real(tid, comm_thread)
+        pid_alvo, ppid, nome_pai, caminho_exe, protegido = obter_info_processo_real(tid, comm_thread)
 
         if protegido or pid_alvo in pids_neutralizados or pid_alvo <= 300:
             return
@@ -242,12 +237,21 @@ def main():
 
                 if risco_atual >= LIMITE_RISCO_IPS:
                     try:
+                        # Neutraliza o grupo de processos (mata pai e filhos forkados se for um payload malicioso)
+                        try:
+                            pgid = os.getpgid(pid_alvo)
+                            if pgid > 300:
+                                os.killpg(pgid, signal.SIGKILL)
+                        except Exception:
+                            pass
                         os.kill(pid_alvo, signal.SIGKILL)
                         pids_neutralizados.add(pid_alvo)
                         risco_acumulado[chave_proc] = 0.0
                         print(f"[#] AÇÃO IPS: Ameaça '{chave_proc}' (PID {pid_alvo}) ABATIDA com SIGKILL!", flush=True)
                     except ProcessLookupError:
-                        pass
+                        pids_neutralizados.add(pid_alvo)
+                        risco_acumulado[chave_proc] = 0.0
+                        print(f"[#] AÇÃO IPS: Ameaça '{chave_proc}' (PID {pid_alvo}) ABATIDA com SIGKILL!", flush=True)
                     except Exception as e:
                         print(f"[ERRO IPS] Falha ao encerrar PID {pid_alvo}: {e}", flush=True)
             else:
