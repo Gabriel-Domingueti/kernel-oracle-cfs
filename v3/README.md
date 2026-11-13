@@ -78,13 +78,31 @@ A avaliação foi executada sobre $N = 1000$ eventos reais do escalonador Linux 
 
 ---
 
-## Mecanismo de Abate Autônomo (IPS) e Validação com XMRig Real
+### 4. Validação Prática Multi-Ameaça em Sandbox (MITRE ATT&CK)
 
-Para converter a classificação por janela (`91.50%` de acurácia instantânea) em uma decisão de abate à prova de falsos positivos, o `sentinel_daemon.py` implementa três camadas de segurança:
+Para comprovar que o **KernelOracle Sentinel (v3)** atua como um IPS comportamental agnóstico à assinatura do binário, o daemon foi submetido a 5 classes distintas de payloads ofensivos em ambiente isolado (QEMU/KVM sem interface de rede). Todos os ataques foram detectados no escalonador CFS e neutralizados via `SIGKILL` (incluindo árvores de processos `fork()` via `killpg`) em **menos de 1 segundo**:
 
-1. **Verificação Estrutural de Origem (`/proc/<tid>/status` e `/proc/<tgid>/exe`):** Resolve o processo pai real (`TGID`) de todas as *threads* filhas e protege automaticamente binários residentes em diretórios confiáveis do sistema operacional (`/usr/bin`, `/usr/lib`, `/opt`, `/snap`, Flatpak) e motores de navegadores web.
-2. **Acumulador Sequencial de Risco Estocástico:** O risco $R_p$ de um processo $p$ só incrementa quando $S_{\text{Híbrido}}(t) > \theta^*$ **e** a tarefa encontra-se em retenção ativa ($S_1$ ou $S_2$). Quando o processo cede a CPU voluntariamente ($S_0$), o risco sofre decaimento cooperativo ($-0.15$).
-3. **Neutralização Sub-Segundo (`SIGKILL`):** Ao atingir $R_p \ge 8.0$, o daemon envia o sinal `SIGKILL` (`9`) diretamente ao `TGID` infrator. Nos testes em sandbox isolada contra o minerador real **XMRig v6.21.0 (RandomX)**, o processo atacante (`PID 3467`) foi detectado e abatido em **menos de 1 segundo** após alocar o dataset de mineração.
+| Classe de Ameaça | Técnica MITRE ATT&CK | Payload / Binário Avaliado | Padrão no Escalonador CFS | PID / PGID Alvo | Tempo de Reação IPS | Status Final |
+| :--- | :---: | :--- | :--- | :---: | :---: | :---: |
+| **Cryptojacking (Memory-Hard)** | `T1496` | `XMRig v6.21.0` (`RandomX`) | Alocação de 2.3 GB + Exaustão $S_1 \to S_1$ | `PID 5866` | `< 1.0 s` (`23:16:10`) | **`SIGKILL` (`Morto`)** |
+| **Cryptojacking (ALU-Bound)** | `T1496` | `cpuminer-multi 1.3.7` (`SHA-256d`) | 4 threads intensivas em inteiros ($S_0 \to S_2$) | `PID 7121` | `< 1.0 s` (`23:14:12`) | **`SIGKILL` (`Morto`)** |
+| **Ransomware (Mass Encryption)** | `T1486` | `ransom_aes` (`AES-256-CBC` 4-way) | Processos filhos via `fork()` em alta retenção | `PIDs 5810-5812` | `< 1.0 s` (`23:07:51`) | **`SIGKILL` (`Signal 9`)** |
+| **Password Cracker (Brute Force)** | `T1110` | `shadow_cracker` (`SHA-512` multi-core) | Disputa multi-processo contínua ($S_1 \to S_1$) | `PIDs 7116-7118` | `< 1.0 s` (`23:13:02`) | **`SIGKILL` (`Morto`)** |
+| **Endpoint DoS (CPU Flood)** | `T1499` | `dos_flood` (`stress-ng matrixprod`) | Exaustão severa de FPU ($S_2 \to S_2$) | `PIDs 5846-5847` | `0.11 s` (`23:12:57`) | **`SIGKILL` (`Abatido`)** |
+
+#### Evidências Visuais de Contenção em Tempo Real (`journalctl` vs. Terminal do Atacante)
+
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_xmrig.png" width="48%" alt="Abate XMRig RandomX" />
+  <img src="./metrics/evidence/ips_kill_cpuminer.png" width="48%" alt="Abate Cpuminer SHA256d" />
+</p>
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_ransom_aes.png" width="48%" alt="Abate Ransomware AES-256" />
+  <img src="./metrics/evidence/ips_kill_shadow_cracker.png" width="48%" alt="Abate Cracker SHA-512" />
+</p>
+<p align="center">
+  <img src="./metrics/evidence/ips_kill_dos_flood.png" width="55%" alt="Abate Trojan DoS MatrixProd" />
+</p>
 
 ---
 
