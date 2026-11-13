@@ -72,15 +72,15 @@ Para comprovar que o **KernelOracle Sentinel (v3)** atua como um IPS comportamen
 #### Evidências Visuais de Contenção em Tempo Real (`journalctl` vs. Terminal do Atacante)
 
 <p align="center">
-  <img src="./metrics/evidence/ips_kill_xmrig.png" width="48%" alt="Abate XMRig RandomX" />
-  <img src="./metrics/evidence/ips_kill_cpuminer.png" width="48%" alt="Abate Cpuminer SHA256d" />
+  <img src="v3/metrics/evidence/ips_kill_xmrig.png" width="48%" alt="Abate XMRig RandomX" />
+  <img src="v3/metrics/evidence/ips_kill_cpuminer.png" width="48%" alt="Abate Cpuminer SHA256d" />
 </p>
 <p align="center">
-  <img src="./metrics/evidence/ips_kill_ransom_aes.png" width="48%" alt="Abate Ransomware AES-256" />
-  <img src="./metrics/evidence/ips_kill_shadow_cracker.png" width="48%" alt="Abate Cracker SHA-512" />
+  <img src="v3/metrics/evidence/ips_kill_ransom_aes.png" width="48%" alt="Abate Ransomware AES-256" />
+  <img src="v3/metrics/evidence/ips_kill_shadow_cracker.png" width="48%" alt="Abate Cracker SHA-512" />
 </p>
 <p align="center">
-  <img src="./metrics/evidence/ips_kill_dos_flood.png" width="55%" alt="Abate Trojan DoS MatrixProd" />
+  <img src="v3/metrics/evidence/ips_kill_dos_flood.png" width="55%" alt="Abate Trojan DoS MatrixProd" />
 </p>
 
 ---
